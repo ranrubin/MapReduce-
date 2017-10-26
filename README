@@ -1,0 +1,218 @@
+
+EX: 3
+
+FILES:
+MapReduceFramework.cpp
+Search.cpp
+Makefile
+README
+
+REMARKS:
+None.
+
+ANSWERS:
+
+The design we used in Search.cpp:
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+We divided the work between the Map and the Reduce functions as follows:
+At first, the (k1,v1) tuples that are initially created are based on each file-path 
+received as an input as k1, and the single search word as v1.
+Then, the Map function went over each of these (k1,v1) tuples, and for each of 
+them it searched all the files on each folder (the folder k1), and generated
+a new tuple (k2,v2) which is fileName and a Count object set to 1.
+The Reduce function at it's turn then summed up for each key it's number
+of times the tuple (fileName,1) appeared, and generated the final tuple - 
+(fileName, numOfAppears).
+So to summarize - the division of work was that Map iteratively searched each
+folder it received, labeling each file it sees with a (fileName,1) tuple, while
+the Reduce function simply summed the overall appears of each fileName overall.
+
+Question 1:
+~~~~~~~~~~~
+An alternative design to implement the synchronization using conditional variable:
+In the original design, each time the execMap finished an iteration, it post to 
+the semaphore and the shuffle woke up. In the alternative design, we would've 
+used a conditional variable to indicate that the shuffle should wake up. execMap 
+would finish to process a chunk of data and use the conditional variable to signal 
+that the shuffle should wake up. in the meanwhile the shuffle would've been
+on a cond_wait status until such CV was signaled, and then it would've woken up.
+
+pseudo code:
+------------
+pthread_mutex_t mu, idxMu;
+pthread_cond_t cv;
+int curIndexToReadFrom;
+boolean flag = false;
+
+The shuffle process:
+while (true) {
+	pthread_cond_timedwait(&cv, &mu, timer(time)); // waiting for the cv to
+	// signal
+	if (flag) {
+		// shuffle is finished
+		exit(process);
+	}
+	...
+	//cont of flow, processing the data from execMap//
+	...
+
+}
+
+The execMap process:
+int i;
+while (true) {
+	// trying to acquire the mutex on the current index to read from
+	pthread_mutex_lock(&idxMu);
+	i = curIndexToReadFrom;
+	curIndexToReadFrom += DATA_CHUNK; // adding the pre-def chunk of items to read
+	pthread_mutex_unlock(&mu);
+	if (no more items) {
+		if (this == last execMap thread) {
+			flag = true;
+		}
+		exit(process);
+	}
+
+	...
+	//cont of flow, applying Map function of each item
+	...
+	
+	pthread_cond_signal(&cv); // signaling the CV, in order to wake up shuffle
+}
+
+------------
+
+The reason we need to implement this using pthread_cond_timedwait and not
+pthread_cond_wait is that we need to be able to exit shuffle if no execMap
+were produced, or if they had zero work. For example, if no execMap were
+created, the shuffle would've wait for a signal which would never come.
+that would cause the shuffle thread to never die. using pthread_cond_timedwait
+we can be sure that after a timeout is passed the mutex will release.
+
+Question 2:
+~~~~~~~~~~~
+According to tirgul notes, the best tuning for keeping the CPU busy is based
+on the average blocking time (B(T)), and service time (S(T)) of each request and is 
+determine by: B(T)/S(T)+1. In our case there's no hyper-threading support,
+which could allow for each CPU to run 2 threads in parallel. That being said,
+the number of threads depends on the program being run. For example, if our 
+program didn't have IO calls, the answer would be simply 8 (the number of CPUs).
+
+We ran our program in lab computers using 1, 2, 4 and 8 threads. The results are:
+1 thread - 
+	Map & Shuffle: 19,788ms
+	Reduce: 81.237ms
+2 threads - 
+	Map & Shuffle: 10078.162ms
+	Reduce: 181.5ms
+4 threads - 
+	Map & Shuffle: 8402.981ms
+	Reduce: 119.48ms
+8 threads - 
+	Map & Shuffle: 9345.3ms
+	Reduce: 116ms
+	
+We can view that using a 4-core processor (computer lab's), we achieved best
+results using 4 threads. For an octa-core processor then we would suggest to
+double the number of threads - meaning 16 threads overall. Considering the 
+main and shuffle threads, multiThreadLevel should be 14.
+
+Question 3:
+~~~~~~~~~~~
+a. Utilizing multi-cores
+	1. Moti's posix library will be able to utilize the multi-cores at best,
+	because of the flexibility of the library to fit processes of different
+	scales to threads that would fix the cores capability at best.
+	2. Galit would achieve a slightly better result then Nira and Galit, but
+	no-where near Moti's implementation. The reason for that is because the
+	processes might not fit best to the cores capability, and the
+	concurrency will be worse then splitting it to threads of flexible size.
+	3. Nira and Galit would achieve the same results in terms of utilizing the
+	multi-cores, because either on the user-level threads created on ex2, or a
+	single thread and a single process, there's no parallelization in the CPU,
+	since only 1 program runs at a given point.
+
+b. The ability to create a sophisticated scheduler, based on internal data.
+	1. Nira won't need a scheduler because no concurrency is used.
+	2. Moti's scheduler will be able to schedule between different threads
+	through prioritizing the different threads and giving them a chance to
+	run first in compare to different threads - using semaphore and mutexes.
+	3.Danny's round robin implementation from ex2 would not be able to created
+	sophisticated scheduler, because the method of scheduling is fixed and cannot
+	prioritize based on internal data (only based on quantum).
+	4.Galit could theoretically create a sophisticated scheduler, but the fact
+	that she is multi-processing rather than multi-threading will cause any
+	scheduler to be less sophisticated than a multi-threading one.
+
+c. Communication time (between different threads/processes)
+	1. Nira will not have any communication since only 1 thread is running
+	2. Moti will have the best communication between processes. that is because
+	each thread can communicate between different threads using CV, semaphores or
+	mutexes. using these methods, done properly, can get threads to communicate
+	very fast and deliever information between them in the time it takes to wake up 
+	a semaphore.
+	3. Danny's implementation of ex2 has a limited communication between
+	threads,
+	because only certain information can be passed between different threads - 
+	for example only a sync dependency, or a terminate that would release a sync, 
+	can be performed between threads.
+	4. Cannot communicate at all, as each process would need it's own
+	working space, which would be separate between different procceses. the
+	result would be minimal communication that will happen only through the OS.
+
+d. Ability to progress while a certain thread/process is blocked
+	1. Nira will have no progress (1 thread)
+	2. Moti will have the best ability to progress while a certain thread is blocked,
+	since each execMap thread is not dependent on the other, and no single thread
+	that is blocked  can cause the program to stop, or limit it's ability to
+	progress (any execMap will call shuffle, any execReduce will call reduce).
+	the only threads that are waiting are shuffle and final reduce, and so even
+	if they're blocked, the exec threads will still process data.
+	3. Danny's ex2 implementation will be slightly more limited in the ability to
+	progress while certain threads are blocked - for example in the case that
+	alot of threads are synced to a specific thread, which is blocked. in order
+	for all the synced threads to be unblocked, the blocked thread
+	would have to be resumed. this can harm the ability of the program to progress.
+	but in the regular situation where a single thread is blocked - the round
+	robin scheduler will swap the thread to a running one, thus saving cpu time.
+	4. Galit would have the best ability to progress while certain processes are
+	blocked, since each process is separate, it's independent of the others.
+
+e. Overall speed
+overall speed for those different implementation would be in the order:
+	1.Moti's posix library
+	2.Danny's user level threads from ex2
+	3.Galit's multi-processes
+	4.Nira's single thread
+	The reason is because posix library's threads are the most flexible in terms of
+	using CPU, then the user level threads which use the round-robin scheduler
+	to achieve maximum usage, then a multi-process which is worse than any
+	multi-thread method, but still better than a single thread process.
+
+Question 4:
+~~~~~~~~~~~
+Kernel-level thread:
+    For a kernel-level thread, each has it's own stack pointer, but everything
+    else will be shared between the threads sharing the process. That means
+    - They do share global vars and heap.
+Process:
+    They do not share any of the three, since by definition each process is
+    entirely separate from one another.
+User-level thread:
+    User level threads share global variables and a heap - similar to what
+    we've implemented in ex2 - where each user level thread could make use
+    of global vars. As for the stack, each thread has it's own stack pointer.
+
+Question 5:
+~~~~~~~~~~~
+The difference between a deadlock and a livelock is that a deadlock is a state
+in which each thread/process is waiting for another thread/process to release a
+lock. This cause all the threads to wait forever, since there's a loop of
+waiting threads. A livelock is similar, except that the states of the locks
+on each thread are constantly changing with regard to one another, but no
+one progresses. for example we can consider
+the case that a husband and wife are trying to eat soup, but only have one
+spoon between them. Each spouse is too polite, and will pass the spoon if
+the other has not yet eaten. this is similar to a livelock, where the threads
+are still 'stuck' but their states are constantly changing with regards to
+other threads.
